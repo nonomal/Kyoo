@@ -33,6 +33,27 @@ class AniList(Provider):
 		self._client = client
 		self.base = "https://graphql.anilist.co"
 		self.api_key = api_key
+		self._genre_map = {
+			"Action": Genre.ACTION
+			"Adventure": Genre.ADVENTURE
+			"Comedy": Genre.COMEDY
+			"Drama": Genre.DRAMA
+			"Ecchi": Genre.ECCHI
+			"Fantasy": Genre.FANTASY
+			"Hentai": Genre.HENTAI
+			"Horror": Genre.HORROR
+			"Mahou Shoujo": Genre.MAHOU SHOUJO
+			"Mecha": Genre.MECHA
+			"Music": Genre.MUSIC
+			"Mystery": Genre.MYSTERY
+			"Psychological": Genre.PSYCHOLOGICAL
+			"Romance": Genre.ROMANCE
+			"Sci-Fi": Genre.SCI-FI
+			"Slice of Life": Genre.SLICE OF LIFE
+			"Sports": Genre.SPORTS
+			"Supernatural": Genre.SUPERNATURAL
+			"Thriller"
+	}
 
 	@property
 	def name(self) -> str:
