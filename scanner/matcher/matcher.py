@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Literal
+from typing import Literal, Optional
 import asyncio
 from logging import getLogger
 from providers.provider import Provider, ProviderError
@@ -51,53 +51,79 @@ class Matcher:
 
 		if "mimetype" not in raw or not raw["mimetype"].startswith("video"):
 			return
-		# Remove seasons in "One Piece (1999) 152.mkv" for example
-		if raw.get("season") == raw.get("year") and "season" in raw:
-			del raw["season"]
-
-		if isinstance(raw.get("season"), list):
-			raise ProviderError(
-				f"An episode can't have multiple seasons (found {raw.get('season')} for {path})"
-			)
-		if isinstance(raw.get("episode"), list):
-			raise ProviderError(
-				f"Multi-episodes files are not yet supported (for {path})"
-			)
 
 		logger.info("Identied %s: %s", path, raw)
 
+		title = raw.get("title")
+		if not isinstance(title, str):
+			raise ProviderError(f"Could not guess title, found: {title}")
+
+		year = raw.get("year")
+		if year is not None and not isinstance(year, int):
+			year = None
+			logger.warn(f"Invalid year value. Found {year}. Ignoring")
+
 		if raw["type"] == "movie":
-			movie = await self._provider.search_movie(raw["title"], raw.get("year"))
-			movie.path = str(path)
-			logger.debug("Got movie: %s", movie)
-			movie_id = await self._client.post("movies", data=movie.to_kyoo())
-
-			if any(movie.collections):
-				ids = await asyncio.gather(
-					*(self.create_or_get_collection(x) for x in movie.collections)
-				)
-				await asyncio.gather(
-					*(self._client.link_collection(x, "movie", movie_id) for x in ids)
-				)
+			await self.search_movie(title, year, path)
 		elif raw["type"] == "episode":
-			episode = await self._provider.search_episode(
-				raw["title"],
-				season=raw.get("season"),
-				episode_nbr=raw.get("episode"),
-				absolute=raw.get("episode") if "season" not in raw else None,
-				year=raw.get("year"),
-			)
-			episode.path = str(path)
-			logger.debug("Got episode: %s", episode)
-			episode.show_id = await self.create_or_get_show(episode)
-
-			if episode.season_number is not None:
-				episode.season_id = await self.register_seasons(
-					episode.show, episode.show_id, episode.season_number
+			season = raw.get("season")
+			if isinstance(season, list):
+				raise ProviderError(
+					f"An episode can't have multiple seasons (found {raw.get('season')} for {path})"
 				)
-			await self._client.post("episodes", data=episode.to_kyoo())
+			if season is not None and not isinstance(season, int):
+				raise ProviderError(f"Could not guess season, found: {season}")
+			episode = raw.get("episode")
+			if isinstance(episode, list):
+				raise ProviderError(
+					f"Multi-episodes files are not yet supported (for {path})"
+				)
+			if not isinstance(episode, int):
+				raise ProviderError(f"Could not guess episode, found: {episode}")
+
+			await self.search_episode(title, year, season, episode, path)
 		else:
 			logger.warn("Unknown video file type: %s", raw["type"])
+
+	async def search_movie(self, title: str, year: Optional[int], path: str):
+		movie = await self._provider.search_movie(title, year)
+		movie.file_title = title
+		movie.path = path
+		logger.debug("Got movie: %s", movie)
+		movie_id = await self._client.post("movies", data=movie.to_kyoo())
+
+		if any(movie.collections):
+			ids = await asyncio.gather(
+				*(self.create_or_get_collection(x) for x in movie.collections)
+			)
+			await asyncio.gather(
+				*(self._client.link_collection(x, "movie", movie_id) for x in ids)
+			)
+
+	async def search_episode(
+		self,
+		title: str,
+		year: Optional[int],
+		season: Optional[int],
+		episode_nbr: int,
+		path: str,
+	):
+		episode = await self._provider.search_episode(
+			title,
+			season=season,
+			episode_nbr=episode_nbr if season is not None else None,
+			absolute=episode_nbr if season is None else None,
+			year=year,
+		)
+		episode.path = path
+		logger.debug("Got episode: %s", episode)
+		episode.show_id = await self.create_or_get_show(episode, title)
+
+		if episode.season_number is not None:
+			episode.season_id = await self.register_seasons(
+				episode.show, episode.show_id, episode.season_number
+			)
+		await self._client.post("episodes", data=episode.to_kyoo())
 
 	async def create_or_get_collection(self, collection: Collection) -> str:
 		@cache(ttl=timedelta(days=1), cache=self._collection_cache)
@@ -115,7 +141,7 @@ class Matcher:
 		provider_id = collection.external_id[self._provider.name].data_id
 		return await create_collection(provider_id)
 
-	async def create_or_get_show(self, episode: Episode) -> str:
+	async def create_or_get_show(self, episode: Episode, fallback_name: str) -> str:
 		@cache(ttl=timedelta(days=1), cache=self._show_cache)
 		async def create_show(_: str):
 			# TODO: Check if a show with the same metadata id exists already on kyoo.
@@ -126,6 +152,7 @@ class Matcher:
 				if isinstance(episode.show, PartialShow)
 				else episode.show
 			)
+			show.file_title = fallback_name
 			# TODO: collections
 			logger.debug("Got show: %s", episode)
 			ret = await self._client.post("show", data=show.to_kyoo())
@@ -172,6 +199,11 @@ class Matcher:
 		kind: Literal["collection", "movie", "episode", "show", "season"],
 		kyoo_id: str,
 	):
+		async def id_movie(movie: dict, id: dict):
+			ret = await self._provider.identify_movie(id["dataId"])
+			ret.path = movie["path"]
+			return ret
+
 		async def id_season(season: dict, id: dict):
 			ret = await self._provider.identify_season(
 				id["dataId"], season["seasonNumber"]
@@ -192,7 +224,7 @@ class Matcher:
 			"collection": lambda _, id: self._provider.identify_collection(
 				id["dataId"]
 			),
-			"movie": lambda _, id: self._provider.identify_movie(id["dataId"]),
+			"movie": id_movie,
 			"show": lambda _, id: self._provider.identify_show(id["dataId"]),
 			"season": id_season,
 			"episode": id_episode,

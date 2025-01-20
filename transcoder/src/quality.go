@@ -17,6 +17,7 @@ const (
 	P1440    Quality = "1440p"
 	P4k      Quality = "4k"
 	P8k      Quality = "8k"
+	NoResize Quality = "transcode"
 	Original Quality = "original"
 )
 
@@ -27,9 +28,11 @@ func QualityFromString(str string) (Quality, error) {
 	if str == string(Original) {
 		return Original, nil
 	}
+	if str == string(NoResize) {
+		return NoResize, nil
+	}
 
-	qualities := Qualities
-	for _, quality := range qualities {
+	for _, quality := range Qualities {
 		if string(quality) == str {
 			return quality, nil
 		}
@@ -110,10 +113,9 @@ func (q Quality) Height() uint32 {
 	panic("Invalid quality value")
 }
 
-func QualityFromHeight(height uint32) Quality {
-	qualities := Qualities
-	for _, quality := range qualities {
-		if quality.Height() >= height {
+func (video *Video) Quality() Quality {
+	for _, quality := range Qualities {
+		if quality.Height() >= video.Height || quality.AverageBitrate() >= video.Bitrate {
 			return quality
 		}
 	}

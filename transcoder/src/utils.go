@@ -1,11 +1,8 @@
 package src
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"fmt"
 	"log"
-	"os"
 	"time"
 )
 
@@ -19,14 +16,23 @@ func printExecTime(message string, args ...any) func() {
 	}
 }
 
-func GetHash(path string) (string, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", err
+func Filter[E any](s []E, f func(E) bool) []E {
+	s2 := make([]E, 0, len(s))
+	for _, e := range s {
+		if f(e) {
+			s2 = append(s2, e)
+		}
 	}
-	h := sha1.New()
-	h.Write([]byte(path))
-	h.Write([]byte(info.ModTime().String()))
-	sha := hex.EncodeToString(h.Sum(nil))
-	return sha, nil
+	return s2
+}
+
+// Count returns the number of elements in s that are equal to e.
+func Count[S []E, E comparable](s S, e E) int {
+	var n int
+	for _, v := range s {
+		if v == e {
+			n++
+		}
+	}
+	return n
 }

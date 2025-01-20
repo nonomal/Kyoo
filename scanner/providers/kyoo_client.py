@@ -26,6 +26,9 @@ class KyooClient:
 	async def __aenter__(self):
 		jsons.set_serializer(lambda x, **_: format_date(x), type[Optional[date | int]])
 		self.client = ClientSession(
+			headers={
+				"User-Agent": "kyoo",
+			},
 			json_serialize=lambda *args, **kwargs: jsons.dumps(
 				*args, key_transformer=jsons.KEY_TRANSFORMER_CAMELCASE, **kwargs
 			),
@@ -58,9 +61,19 @@ class KyooClient:
 				logger.error(f"Request error: {await r.text()}")
 				r.raise_for_status()
 
+	async def get_issues(self) -> List[str]:
+		async with self.client.get(
+			f"{self._url}/issues",
+			params={"limit": 0},
+			headers={"X-API-Key": self._api_key},
+		) as r:
+			r.raise_for_status()
+			ret = await r.json()
+			return [x["cause"] for x in ret if x["domain"] == "scanner"]
+
 	async def delete_issue(self, path: str):
 		async with self.client.delete(
-			f'{self._url}/issues?filter=domain eq scanner and cause eq "{path}"',
+			f'{self._url}/issues?filter=domain eq scanner and cause eq "{quote(path)}"',
 			headers={"X-API-Key": self._api_key},
 		) as r:
 			if not r.ok:
@@ -104,29 +117,16 @@ class KyooClient:
 	async def delete(
 		self,
 		path: str,
-		type: Literal["episode", "movie"] | None = None,
 	):
 		logger.info("Deleting %s", path)
 
-		if type is None or type == "movie":
-			async with self.client.delete(
-				f'{self._url}/movies?filter=path eq "{quote(path)}"',
-				headers={"X-API-Key": self._api_key},
-			) as r:
-				if not r.ok:
-					logger.error(f"Request error: {await r.text()}")
-					r.raise_for_status()
-
-		if type is None or type == "episode":
-			async with self.client.delete(
-				f'{self._url}/episodes?filter=path eq "{quote(path)}"',
-				headers={"X-API-Key": self._api_key},
-			) as r:
-				if not r.ok:
-					logger.error(f"Request error: {await r.text()}")
-					r.raise_for_status()
-
-		await self.delete_issue(path)
+		async with self.client.delete(
+			f"{self._url}/paths?recursive=true&path={quote(path)}",
+			headers={"X-API-Key": self._api_key},
+		) as r:
+			if not r.ok:
+				logger.error(f"Request error: {await r.text()}")
+				r.raise_for_status()
 
 	async def get(self, path: str):
 		async with self.client.get(

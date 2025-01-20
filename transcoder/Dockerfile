@@ -1,9 +1,9 @@
-# FROM golang:1.21 as build
-FROM debian:trixie-slim as build
+# FROM golang:1.23 as build
+FROM debian:trixie-slim AS build
 # those were copied from https://github.com/docker-library/golang/blob/master/Dockerfile-linux.template
 ENV GOTOOLCHAIN=local
-ENV GOPATH /go
-ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
 RUN set -eux; \
 	apt-get update; \
 	apt-get install -y --no-install-recommends \
@@ -18,9 +18,10 @@ RUN set -eux; \
 # https://github.com/golang/go/issues/54400
 ENV SSL_CERT_DIR=/etc/ssl/certs
 RUN update-ca-certificates
+
 RUN apt-get update \
 	&& apt-get install --no-install-recommends --no-install-suggests -y \
-	ffmpeg libavformat-dev libavutil-dev libswscale-dev libmediainfo-dev \
+	ffmpeg libavformat-dev libavutil-dev libswscale-dev \
 	&& apt-get clean autoclean -y \
 	&& apt-get autoremove -y
 WORKDIR /app
@@ -42,7 +43,7 @@ RUN sed -i -e's/ main/ main contrib non-free/g' /etc/apt/sources.list.d/debian.s
 RUN set -x && apt-get update \
 	&& apt-get install --no-install-recommends --no-install-suggests -y \
 	# runtime dependencies
-	ffmpeg libmediainfo-dev \
+	ffmpeg \
 	# hwaccel dependencies
 	vainfo mesa-va-drivers \
 	# intel hwaccel dependencies, not available everywhere
@@ -53,6 +54,7 @@ RUN set -x && apt-get update \
 
 WORKDIR /app
 COPY --from=build /app/transcoder /app/transcoder
+COPY ./migrations /app/migrations
 
 # flags for nvidia acceleration on docker < 25.0
 ENV NVIDIA_VISIBLE_DEVICES="all"

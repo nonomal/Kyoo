@@ -20,28 +20,45 @@
 
 import { z } from "zod";
 import { imageFn } from "../traits";
-import i18next from "i18next";
 import { QualityP } from "./quality";
 
-const getDisplayName = (sub: Track) => {
-	const languageNames = new Intl.DisplayNames([i18next.language ?? "en"], { type: "language" });
-	const lng = sub.language ? languageNames.of(sub.language) : undefined;
-
-	if (lng && sub.title && sub.title !== lng) return `${lng} - ${sub.title}`;
-	if (lng) return lng;
-	if (sub.title) return sub.title;
-	return `Unknown (${sub.index})`;
-};
+/**
+ * A audio or subtitle track.
+ */
+export const TrackP = z.object({
+	/**
+	 * The index of this track on the episode.
+	 * NOTE: external subtitles can have a null index
+	 */
+	index: z.number().nullable(),
+	/**
+	 * The title of the stream.
+	 */
+	title: z.string().nullable(),
+	/**
+	 * The language of this stream (as a ISO-639-2 language code)
+	 */
+	language: z.string().nullable(),
+	/**
+	 * The codec of this stream.
+	 */
+	codec: z.string(),
+	/**
+	 * Is this stream the default one of it's type?
+	 */
+	isDefault: z.boolean(),
+	/**
+	 * Is this stream tagged as forced?
+	 * NOTE: not available for videos
+	 */
+	isForced: z.boolean().optional(),
+});
+export type Track = z.infer<typeof TrackP>;
 
 /**
  * A Video track
  */
-export const VideoP = z.object({
-	/**
-	 * The Codec of the Video Track.
-	 * E.g. "AVC"
-	 */
-	codec: z.string(),
+export const VideoP = TrackP.extend({
 	/**
 	 * The Quality of the Video
 	 * E.g. "1080p"
@@ -66,41 +83,7 @@ export const VideoP = z.object({
 
 export type Video = z.infer<typeof VideoP>;
 
-/**
- * A audio or subtitle track.
- */
-export const TrackP = z.object({
-	/**
-	 * The index of this track on the episode.
-	 */
-	index: z.number(),
-	/**
-	 * The title of the stream.
-	 */
-	title: z.string().nullable(),
-	/**
-	 * The language of this stream (as a ISO-639-2 language code)
-	 */
-	language: z.string().nullable(),
-	/**
-	 * The codec of this stream.
-	 */
-	codec: z.string(),
-	/**
-	 * Is this stream the default one of it's type?
-	 */
-	isDefault: z.boolean(),
-	/**
-	 * Is this stream tagged as forced?
-	 */
-	isForced: z.boolean(),
-});
-export type Track = z.infer<typeof TrackP>;
-
-export const AudioP = TrackP.transform((x) => ({
-	...x,
-	displayName: getDisplayName(x),
-}));
+export const AudioP = TrackP;
 export type Audio = z.infer<typeof AudioP>;
 
 export const SubtitleP = TrackP.extend({
@@ -108,10 +91,15 @@ export const SubtitleP = TrackP.extend({
 	 * The url of this track (only if this is a subtitle)..
 	 */
 	link: z.string().transform(imageFn).nullable(),
-}).transform((x) => ({
-	...x,
-	displayName: getDisplayName(x),
-}));
+	/*
+	 * Is this an external subtitle (as in stored in a different file)
+	 */
+	isExternal: z.boolean(),
+	/**
+	 * Is this a hearing impaired subtitle?
+	 */
+	isHearingImpaired: z.boolean(),
+});
 export type Subtitle = z.infer<typeof SubtitleP>;
 
 export const ChapterP = z.object({
@@ -150,6 +138,11 @@ export const WatchInfoP = z
 		 */
 		extension: z.string(),
 		/**
+		 * The whole mimetype (defined as the RFC 6381).
+		 * ex: `video/mp4; codecs="avc1.640028, mp4a.40.2"`
+		 */
+		mimeCodec: z.string(),
+		/**
 		 * The file size of the video file.
 		 */
 		size: z.number(),
@@ -164,7 +157,7 @@ export const WatchInfoP = z
 		/**
 		 * The video track.
 		 */
-		video: VideoP.nullable(),
+		videos: z.array(VideoP),
 		/**
 		 * The list of audio tracks.
 		 */
@@ -196,8 +189,9 @@ export const WatchInfoP = z
 
 // from https://stackoverflow.com/questions/10420352/converting-file-size-in-bytes-to-human-readable-string
 const humanFileSize = (size: number): string => {
-	var i = size == 0 ? 0 : Math.floor(Math.log(size) / Math.log(1024));
+	const i = size === 0 ? 0 : Math.floor(Math.log(size) / Math.log(1024));
 	// @ts-ignore I'm not gonna fix stackoverflow's working code.
+	// biome-ignore lint: same as above
 	return (size / Math.pow(1024, i)).toFixed(2) * 1 + " " + ["B", "kB", "MB", "GB", "TB"][i];
 };
 
