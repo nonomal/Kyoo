@@ -25,6 +25,7 @@ using System.Threading.Tasks;
 using Dapper;
 using Kyoo.Abstractions.Controllers;
 using Kyoo.Abstractions.Models;
+using Kyoo.Authentication.Models;
 using Kyoo.Postgresql;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -62,7 +63,7 @@ public class MiscRepository(
 		}.Select(x => GetSql(x));
 		string sql = string.Join(" union all ", queries);
 		IEnumerable<Image?> ret = await database.QueryAsync<Image?>(sql);
-		return ret.Where(x => x != null).ToArray() as Image[];
+		return ret.ToArray() as Image[];
 	}
 
 	public async Task DownloadMissingImages()
@@ -82,6 +83,27 @@ public class MiscRepository(
 			.Episodes.Select(x => x.Path)
 			.Concat(context.Movies.Select(x => x.Path))
 			.ToListAsync();
+	}
+
+	public async Task<int> DeletePath(string path, bool recurse)
+	{
+		// Make sure to include a path separator to prevents deletions from things like:
+		// DeletePath("/video/abc", true) -> /video/abdc (should not be deleted)
+		string dirPath = path.EndsWith("/") ? path : $"{path}/";
+
+		int count = await context
+			.Episodes.Where(x => x.Path == path || (recurse && x.Path.StartsWith(dirPath)))
+			.ExecuteDeleteAsync();
+		count += await context
+			.Movies.Where(x => x.Path == path || (recurse && x.Path.StartsWith(dirPath)))
+			.ExecuteDeleteAsync();
+		await context
+			.Issues.Where(x =>
+				x.Domain == "scanner"
+				&& (x.Cause == path || (recurse && x.Cause.StartsWith(dirPath)))
+			)
+			.ExecuteDeleteAsync();
+		return count;
 	}
 
 	public async Task<ICollection<RefreshableItem>> GetRefreshableItems(DateTime end)
@@ -107,6 +129,15 @@ public class MiscRepository(
 			.Where(x => x.RefreshDate <= end)
 			.OrderBy(x => x.RefreshDate)
 			.ToListAsync();
+	}
+
+	public async Task<SetupStep> GetSetupStep()
+	{
+		bool hasUser = await context.Users.AnyAsync();
+		if (!hasUser)
+			return SetupStep.MissingAdminAccount;
+		bool hasItem = await context.Movies.AnyAsync() || await context.Shows.AnyAsync();
+		return hasItem ? SetupStep.Done : SetupStep.NoVideoFound;
 	}
 }
 

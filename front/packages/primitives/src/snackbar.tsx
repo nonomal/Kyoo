@@ -19,14 +19,14 @@
  */
 
 import { usePortal } from "@gorhom/portal";
-import { ReactElement, createContext, useCallback, useContext, useRef } from "react";
-import { ContrastArea, SwitchVariant } from "./themes";
-import { P } from "./text";
+import { type ReactElement, createContext, useCallback, useContext, useRef } from "react";
 import { View } from "react-native";
 import { percent, px } from "yoshiki/native";
-import { ts } from "./utils";
 import { Button } from "./button";
 import { imageBorderRadius } from "./constants";
+import { P } from "./text";
+import { SwitchVariant } from "./themes";
+import { ts } from "./utils";
 
 export type Snackbar = {
 	key?: string;
@@ -61,7 +61,8 @@ export const SnackbarProvider = ({ children }: { children: ReactElement | ReactE
 					return;
 				}
 
-				addPortal("snackbar", <Snackbar {...top} />);
+				const { key, ...props } = top;
+				addPortal("snackbar", <Snackbar key={key} {...props} />);
 				timeout.current = setTimeout(() => {
 					removePortal("snackbar");
 					updatePortal();
