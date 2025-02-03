@@ -1,5 +1,5 @@
 x-transcoder: &transcoder-base
-  image: zoriya/kyoo_transcoder:latest
+  image: ghcr.io/zoriya/kyoo_transcoder:edge
   networks:
     default:
       aliases:
@@ -7,6 +7,8 @@ x-transcoder: &transcoder-base
   restart: unless-stopped
   env_file:
     - ./.env
+  environment:
+    - GOCODER_PREFIX=/video
   volumes:
     - ${LIBRARY_ROOT}:/video:ro
     - ${CACHE_ROOT}:/cache
@@ -14,11 +16,12 @@ x-transcoder: &transcoder-base
 
 services:
   back:
-    image: zoriya/kyoo_back:latest
+    image: ghcr.io/zoriya/kyoo_back:edge
     restart: unless-stopped
     cpus: 1.5
     environment:
-      - TRANSCODER_URL=${TRANSCODER_URL:-http://transcoder:7666}
+      - TRANSCODER_URL=${TRANSCODER_URL:-http://transcoder:7666/video}
+      - KYOO_PREFIX=/api
     env_file:
       - ./.env
     depends_on:
@@ -32,9 +35,12 @@ services:
         condition: service_completed_successfully
     volumes:
       - kyoo:/metadata
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=PathPrefix(`/api/`)"
 
   migrations:
-    image: zoriya/kyoo_migrations:latest
+    image: ghcr.io/zoriya/kyoo_migrations:edge
     restart: "no"
     depends_on:
       postgres:
@@ -43,13 +49,16 @@ services:
       - ./.env
 
   front:
-    image: zoriya/kyoo_front:latest
+    image: ghcr.io/zoriya/kyoo_front:edge
     restart: unless-stopped
     environment:
-      - KYOO_URL=${KYOO_URL:-http://back:5000}
+      - KYOO_URL=${KYOO_URL:-http://back:5000/api}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.front.rule=PathPrefix(`/`)"
 
   scanner:
-    image: zoriya/kyoo_scanner:latest
+    image: ghcr.io/zoriya/kyoo_scanner:edge
     restart: unless-stopped
     depends_on:
       back:
@@ -57,12 +66,12 @@ services:
     env_file:
       - ./.env
     environment:
-      - KYOO_URL=${KYOO_URL:-http://back:5000}
+      - KYOO_URL=${KYOO_URL:-http://back:5000/api}
     volumes:
       - ${LIBRARY_ROOT}:/video:ro
 
   matcher:
-    image: zoriya/kyoo_scanner:latest
+    image: ghcr.io/zoriya/kyoo_scanner:edge
     command: matcher
     restart: unless-stopped
     depends_on:
@@ -71,11 +80,11 @@ services:
     env_file:
       - ./.env
     environment:
-      - KYOO_URL=${KYOO_URL:-http://back:5000}
+      - KYOO_URL=${KYOO_URL:-http://back:5000/api}
 
   autosync:
-    image: zoriya/kyoo_autosync:latest
-    restart: on-failure
+    image: ghcr.io/zoriya/kyoo_autosync:edge
+    restart: unless-stopped
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -93,7 +102,11 @@ services:
         reservations:
           devices:
             - capabilities: [gpu]
+              driver: cdi
+              device_ids:
+                - nvidia.com/gpu=all
     environment:
+      - GOCODER_PREFIX=/video
       - GOCODER_HWACCEL=nvidia
     profiles: ['nvidia']
 
@@ -102,6 +115,7 @@ services:
     devices:
       - /dev/dri:/dev/dri
     environment:
+      - GOCODER_PREFIX=/video
       - GOCODER_HWACCEL=vaapi
       - GOCODER_VAAPI_RENDERER=${GOCODER_VAAPI_RENDERER:-/dev/dri/renderD128}
     profiles: ['vaapi']
@@ -111,24 +125,23 @@ services:
     devices:
       - /dev/dri:/dev/dri
     environment:
+      - GOCODER_PREFIX=/video
       - GOCODER_HWACCEL=qsv
       - GOCODER_VAAPI_RENDERER=${GOCODER_VAAPI_RENDERER:-/dev/dri/renderD128}
     profiles: ['qsv']
 
-  ingress:
-    image: nginx
+  traefik:
+    image: traefik:v3.3
     restart: unless-stopped
-    environment:
-      - PORT=8901
-      - FRONT_URL=http://front:8901
-      - BACK_URL=${KYOO_URL:-http://back:5000}
-    volumes:
-      - ./nginx.conf.template:/etc/nginx/templates/kyoo.conf.template:ro
-    depends_on:
-      - back
-      - front
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:8901"
+      - "--accesslog=true"
     ports:
       - "8901:8901"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
 
   postgres:
     image: postgres:15
@@ -159,8 +172,8 @@ services:
       retries: 5
 
   rabbitmq:
-    image: rabbitmq:3-alpine
-    restart: on-failure
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}
       - RABBITMQ_DEFAULT_PASS=${RABBITMQ_DEFAULT_PASS}

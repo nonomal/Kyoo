@@ -19,29 +19,28 @@
  */
 
 import {
-	Episode,
+	type Episode,
 	EpisodeP,
-	Movie,
+	type Movie,
 	MovieP,
-	QueryIdentifier,
-	WatchInfo,
+	type QueryIdentifier,
+	type WatchInfo,
 	WatchInfoP,
 	useFetch,
 } from "@kyoo/models";
 import { Head } from "@kyoo/primitives";
-import { useState, useEffect, ComponentProps } from "react";
-import { Platform, StyleSheet, View } from "react-native";
-import { useTranslation } from "react-i18next";
-import { useRouter } from "solito/router";
 import { useSetAtom } from "jotai";
+import { type ComponentProps, useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { Platform, StyleSheet, View } from "react-native";
+import { useRouter } from "solito/router";
 import { useYoshiki } from "yoshiki/native";
-import { Back, Hover, LoadingIndicator } from "./components/hover";
-import { durationAtom, fullscreenAtom, Video } from "./state";
 import { episodeDisplayNumber } from "../details/episode";
-import { useVideoKeyboard } from "./keyboard";
-import { MediaSessionManager } from "./media-session";
-import { WatchStatusObserver } from "./watch-status-observer";
 import { ErrorView } from "../errors";
+import { Back, Hover, LoadingIndicator } from "./components/hover";
+import { useVideoKeyboard } from "./keyboard";
+import { Video, durationAtom, fullscreenAtom } from "./state";
+import { WatchStatusObserver } from "./watch-status-observer";
 
 type Item = (Movie & { type: "movie" }) | (Episode & { type: "episode" });
 
@@ -54,7 +53,7 @@ const mapData = (
 	if (!data) return { isLoading: true };
 	return {
 		isLoading: false,
-		name: data.type === "movie" ? data.name : `${episodeDisplayNumber(data, "")} ${data.name}`,
+		name: data.type === "movie" ? data.name : `${episodeDisplayNumber(data)} ${data.name}`,
 		showName: data.type === "movie" ? data.name! : data.show!.name,
 		poster: data.type === "movie" ? data.poster : data.show!.poster,
 		subtitles: info?.subtitles,
@@ -64,6 +63,17 @@ const mapData = (
 		previousSlug,
 		nextSlug,
 	};
+};
+
+const formatTitleMetadata = (item: Item) => {
+	if (item.type === "movie") {
+		return item.name;
+	}
+	return `${item.name} (${episodeDisplayNumber({
+		seasonNumber: item.seasonNumber,
+		episodeNumber: item.episodeNumber,
+		absoluteNumber: item.absoluteNumber,
+	})})`;
 };
 
 export const Player = ({
@@ -82,6 +92,8 @@ export const Player = ({
 	const [playbackError, setPlaybackError] = useState<string | undefined>(undefined);
 	const { data, error } = useFetch(Player.query(type, slug));
 	const { data: info, error: infoError } = useFetch(Player.infoQuery(type, slug));
+	const image =
+		data && data.type === "episode" ? (data.show?.poster ?? data?.poster) : data?.poster;
 	const previous =
 		data && data.type === "episode" && data.previousEpisode
 			? `/watch/${data.previousEpisode.slug}?t=0`
@@ -90,6 +102,8 @@ export const Player = ({
 		data && data.type === "episode" && data.nextEpisode
 			? `/watch/${data.nextEpisode.slug}?t=0`
 			: undefined;
+	const title = data && formatTitleMetadata(data);
+	const subtitle = data && data.type === "episode" ? data.show?.name : undefined;
 
 	useVideoKeyboard(info?.subtitles, info?.fonts, previous, next);
 
@@ -119,28 +133,7 @@ export const Player = ({
 
 	return (
 		<>
-			{data && (
-				<Head
-					title={
-						data.type === "movie"
-							? data.name
-							: data.show!.name +
-								" " +
-								episodeDisplayNumber({
-									seasonNumber: data.seasonNumber,
-									episodeNumber: data.episodeNumber,
-									absoluteNumber: data.absoluteNumber,
-								})
-					}
-					description={data.overview}
-				/>
-			)}
-			<MediaSessionManager
-				title={data?.name ?? t("show.episodeNoMetadata")}
-				image={data?.thumbnail?.high}
-				next={next}
-				previous={previous}
-			/>
+			<Head title={title} description={data?.overview} />
 			{data && info && (
 				<WatchStatusObserver type={type} slug={data.slug} duration={info.durationSeconds} />
 			)}
@@ -152,9 +145,18 @@ export const Player = ({
 				})}
 			>
 				<Video
+					metadata={{
+						title: title ?? t("show.episodeNoMetadata"),
+						artist: subtitle ?? undefined,
+						description: data?.overview ?? undefined,
+						imageUri: image?.medium,
+						next: next,
+						previous: previous,
+					}}
 					links={data?.links}
 					audios={info?.audios}
 					subtitles={info?.subtitles}
+					codec={info?.mimeCodec}
 					setError={setPlaybackError}
 					fonts={info?.fonts}
 					startTime={startTime}
@@ -205,3 +207,5 @@ Player.getFetchUrls = ({ slug, type }: { slug: string; type: "episode" | "movie"
 	Player.query(type, slug),
 	Player.infoQuery(type, slug),
 ];
+
+Player.requiredPermissions = ["overall.play"];

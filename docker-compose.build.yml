@@ -7,6 +7,8 @@ x-transcoder: &transcoder-base
   restart: on-failure
   env_file:
     - ./.env
+  environment:
+    - GOCODER_PREFIX=/video
   volumes:
     - ${LIBRARY_ROOT}:/video:ro
     - ${CACHE_ROOT}:/cache
@@ -17,7 +19,8 @@ services:
     build: ./back
     restart: on-failure
     environment:
-      - TRANSCODER_URL=${TRANSCODER_URL:-http://transcoder:7666}
+      - TRANSCODER_URL=${TRANSCODER_URL:-http://transcoder:7666/video}
+      - KYOO_PREFIX=/api
     env_file:
       - ./.env
     depends_on:
@@ -31,6 +34,9 @@ services:
         condition: service_completed_successfully
     volumes:
       - kyoo:/metadata
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.api.rule=PathPrefix(`/api/`)"
 
   migrations:
     build:
@@ -47,7 +53,26 @@ services:
     build: ./front
     restart: on-failure
     environment:
-      - KYOO_URL=${KYOO_URL:-http://back:5000}
+      - KYOO_URL=${KYOO_URL:-http://back:5000/api}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.front.rule=PathPrefix(`/`)"
+
+  auth:
+    build: ./auth
+    restart: on-failure
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    environment:
+      - KEIBI_PREFIX=/auth
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/auth/`)"
+    profiles:
+      - "v5"
 
   scanner:
     build: ./scanner
@@ -58,21 +83,21 @@ services:
     env_file:
       - ./.env
     environment:
-      - KYOO_URL=${KYOO_URL:-http://back:5000}
+      - KYOO_URL=${KYOO_URL:-http://back:5000/api}
     volumes:
       - ${LIBRARY_ROOT}:/video:ro
 
   matcher:
     build: ./scanner
     command: matcher
-    restart: unless-stopped
+    restart: on-failure
     depends_on:
       back:
         condition: service_healthy
     env_file:
       - ./.env
     environment:
-      - KYOO_URL=${KYOO_URL:-http://back:5000}
+      - KYOO_URL=${KYOO_URL:-http://back:5000/api}
 
   autosync:
     build: ./autosync
@@ -94,7 +119,11 @@ services:
         reservations:
           devices:
             - capabilities: [gpu]
+              driver: cdi
+              device_ids:
+                - nvidia.com/gpu=all
     environment:
+      - GOCODER_PREFIX=/video
       - GOCODER_HWACCEL=nvidia
     profiles: ['nvidia']
 
@@ -103,6 +132,7 @@ services:
     devices:
       - /dev/dri:/dev/dri
     environment:
+      - GOCODER_PREFIX=/video
       - GOCODER_HWACCEL=vaapi
       - GOCODER_VAAPI_RENDERER=${GOCODER_VAAPI_RENDERER:-/dev/dri/renderD128}
     profiles: ['vaapi']
@@ -112,24 +142,23 @@ services:
     devices:
       - /dev/dri:/dev/dri
     environment:
+      - GOCODER_PREFIX=/video
       - GOCODER_HWACCEL=qsv
       - GOCODER_VAAPI_RENDERER=${GOCODER_VAAPI_RENDERER:-/dev/dri/renderD128}
     profiles: ['qsv']
 
-  ingress:
-    image: nginx
+  traefik:
+    image: traefik:v3.3
     restart: on-failure
-    environment:
-      - PORT=8901
-      - FRONT_URL=http://front:8901
-      - BACK_URL=${KYOO_URL:-http://back:5000}
-    volumes:
-      - ./nginx.conf.template:/etc/nginx/templates/kyoo.conf.template:ro
-    depends_on:
-      - back
-      - front
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entryPoints.web.address=:8901"
+      - "--accesslog=true"
     ports:
       - "8901:8901"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
 
   postgres:
     image: postgres:15
@@ -160,7 +189,7 @@ services:
       retries: 5
 
   rabbitmq:
-    image: rabbitmq:3-alpine
+    image: rabbitmq:4-alpine
     restart: on-failure
     environment:
       - RABBITMQ_DEFAULT_USER=${RABBITMQ_DEFAULT_USER}

@@ -19,19 +19,23 @@
  */
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { useRouter } from "solito/router";
 import { useEffect } from "react";
+import { useRouter } from "solito/router";
 import { reducerAtom } from "./keyboard";
 import { durationAtom, playAtom, progressAtom } from "./state";
 
 export const MediaSessionManager = ({
 	title,
-	image,
+	subtitle,
+	artist,
+	imageUri,
 	previous,
 	next,
 }: {
 	title?: string;
-	image?: string | null;
+	subtitle?: string;
+	artist?: string;
+	imageUri?: string | null;
 	previous?: string;
 	next?: string;
 }) => {
@@ -45,9 +49,11 @@ export const MediaSessionManager = ({
 		if (!("mediaSession" in navigator)) return;
 		navigator.mediaSession.metadata = new MediaMetadata({
 			title: title,
-			artwork: image ? [{ src: image }] : undefined,
+			album: subtitle,
+			artist: artist,
+			artwork: imageUri ? [{ src: imageUri }] : undefined,
 		});
-	}, [title, image]);
+	}, [title, subtitle, artist, imageUri]);
 
 	useEffect(() => {
 		if (!("mediaSession" in navigator)) return;

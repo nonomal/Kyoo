@@ -2,24 +2,27 @@ package src
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/lib/pq"
 )
 
+const KeyframeVersion = 1
+
 type Keyframe struct {
-	Sha         string
-	Keyframes   []float64
-	CanTransmux bool
-	IsDone      bool
-	info        *KeyframeInfo
+	Keyframes []float64
+	IsDone    bool
+	info      *KeyframeInfo
 }
 type KeyframeInfo struct {
-	mutex     sync.RWMutex
 	ready     sync.WaitGroup
+	mutex     sync.RWMutex
 	listeners []func(keyframes []float64)
 }
 
@@ -35,7 +38,12 @@ func (kf *Keyframe) Slice(start int32, end int32) []float64 {
 	}
 	kf.info.mutex.RLock()
 	defer kf.info.mutex.RUnlock()
+
 	ref := kf.Keyframes[start:end]
+	if kf.IsDone {
+		return ref
+	}
+	// make a copy since we will continue to mutate the array.
 	ret := make([]float64, end-start)
 	copy(ret, ref)
 	return ret
@@ -62,37 +70,99 @@ func (kf *Keyframe) AddListener(callback func(keyframes []float64)) {
 	kf.info.listeners = append(kf.info.listeners, callback)
 }
 
-var keyframes = NewCMap[string, *Keyframe]()
-
-func GetKeyframes(sha string, path string) *Keyframe {
-	ret, _ := keyframes.GetOrCreate(sha, func() *Keyframe {
-		kf := &Keyframe{
-			Sha:    sha,
-			IsDone: false,
-			info:   &KeyframeInfo{},
-		}
-		kf.info.ready.Add(1)
-		go func() {
-			save_path := fmt.Sprintf("%s/%s/keyframes.json", Settings.Metadata, sha)
-			if err := getSavedInfo(save_path, kf); err == nil {
-				log.Printf("Using keyframes cache on filesystem for %s", path)
-				kf.info.ready.Done()
-				return
-			}
-
-			err := getKeyframes(path, kf)
-			if err == nil {
-				saveInfo(save_path, kf)
-			}
-		}()
-		return kf
-	})
-	ret.info.ready.Wait()
-	return ret
+func (kf *Keyframe) Scan(src interface{}) error {
+	var arr pq.Float64Array
+	err := arr.Scan(src)
+	if err != nil {
+		return err
+	}
+	kf.Keyframes = arr
+	kf.IsDone = true
+	kf.info = &KeyframeInfo{}
+	return nil
 }
 
-func getKeyframes(path string, kf *Keyframe) error {
-	defer printExecTime("ffprobe analysis for %s", path)()
+type KeyframeKey struct {
+	Sha     string
+	IsVideo bool
+	Index   uint32
+}
+
+func (s *MetadataService) GetKeyframes(info *MediaInfo, isVideo bool, idx uint32) (*Keyframe, error) {
+	info.lock.Lock()
+	var ret *Keyframe
+	if isVideo && info.Videos[idx].Keyframes != nil {
+		ret = info.Videos[idx].Keyframes
+	}
+	if !isVideo && info.Audios[idx].Keyframes != nil {
+		ret = info.Audios[idx].Keyframes
+	}
+	info.lock.Unlock()
+	if ret != nil {
+		return ret, nil
+	}
+
+	get_running, set := s.keyframeLock.Start(KeyframeKey{
+		Sha:     info.Sha,
+		IsVideo: isVideo,
+		Index:   idx,
+	})
+	if get_running != nil {
+		return get_running()
+	}
+
+	kf := &Keyframe{
+		IsDone: false,
+		info:   &KeyframeInfo{},
+	}
+	kf.info.ready.Add(1)
+
+	info.lock.Lock()
+	if isVideo {
+		info.Videos[idx].Keyframes = kf
+	} else {
+		info.Audios[idx].Keyframes = kf
+	}
+	info.lock.Unlock()
+
+	go func() {
+		var table string
+		var err error
+		if isVideo {
+			table = "videos"
+			err = getVideoKeyframes(info.Path, idx, kf)
+		} else {
+			table = "audios"
+			err = getAudioKeyframes(info, idx, kf)
+		}
+
+		if err != nil {
+			log.Printf("Couldn't retrieve keyframes for %s %s %d: %v", info.Path, table, idx, err)
+			return
+		}
+
+		kf.info.ready.Wait()
+		tx, _ := s.database.Begin()
+		tx.Exec(
+			fmt.Sprintf(`update %s set keyframes = $3 where sha = $1 and idx = $2`, table),
+			info.Sha,
+			idx,
+			pq.Array(kf.Keyframes),
+		)
+		tx.Exec(`update info set ver_keyframes = $2 where sha = $1`, info.Sha, KeyframeVersion)
+		err = tx.Commit()
+		if err != nil {
+			log.Printf("Couldn't store keyframes on database: %v", err)
+		}
+	}()
+	return set(kf, nil)
+}
+
+// Retrive video's keyframes and store them inside the kf var.
+// Returns when all key frames are retrived (or an error occurs)
+// info.ready.Done() is called when more than 100 are retrived (or extraction is done)
+func getVideoKeyframes(path string, video_idx uint32, kf *Keyframe) error {
+	defer printExecTime("ffprobe keyframe analysis for %s video n%d", path, video_idx)()
 	// run ffprobe to return all IFrames, IFrames are points where we can split the video in segments.
 	// We ask ffprobe to return the time of each frame and it's flags
 	// We could ask it to return only i-frames (keyframes) with the -skip_frame nokey but using it is extremly slow
@@ -100,8 +170,10 @@ func getKeyframes(path string, kf *Keyframe) error {
 	cmd := exec.Command(
 		"ffprobe",
 		"-loglevel", "error",
-		"-select_streams", "v:0",
+		"-select_streams", fmt.Sprintf("V:%d", video_idx),
 		"-show_entries", "packet=pts_time,flags",
+		// some avi files don't have pts, we use this to ask ffmpeg to generate them (it uses the dts under the hood)
+		"-fflags", "+genpts",
 		"-of", "csv=print_section=0",
 		path,
 	)
@@ -117,8 +189,15 @@ func getKeyframes(path string, kf *Keyframe) error {
 	scanner := bufio.NewScanner(stdout)
 
 	ret := make([]float64, 0, 1000)
-	max := 100
+	limit := 100
 	done := 0
+	// sometimes, videos can start at a timing greater than 0:00. We need to take that into account
+	// and only list keyframes that come after the start of the video (without that, our segments count
+	// mismatch and we can have the same segment twice on the stream).
+	//
+	// We can't hardcode the first keyframe at 0 because the transcoder needs to reference durations of segments
+	// To handle this edge case, when we fetch the segment n0, no seeking is done but duration is computed from the
+	// first keyframe (instead of 0)
 	for scanner.Scan() {
 		frame := scanner.Text()
 		if frame == "" {
@@ -128,6 +207,12 @@ func getKeyframes(path string, kf *Keyframe) error {
 		x := strings.Split(frame, ",")
 		pts, flags := x[0], x[1]
 
+		// true if there is no keyframes (e.g. in a file w/o video track)
+		// can also happen if a video has more packets than frames (so the last packet
+		// is emtpy and has a N/A pts)
+		if pts == "N/A" {
+			break
+		}
 		// Only take keyframes
 		if flags[0] != 'K' {
 			continue
@@ -143,34 +228,111 @@ func getKeyframes(path string, kf *Keyframe) error {
 		// the segment time and decide to cut at a random keyframe. Having every keyframe
 		// handled as a segment prevents that.
 
-		if done == 0 && len(ret) == 0 {
-			// sometimes, videos can start at a timing greater than 0:00. We need to take that into account
-			// and only list keyframes that come after the start of the video (without that, our segments count
-			// mismatch and we can have the same segment twice on the stream).
-
-			// we hardcode 0 as the first keyframe (even if this is fake) because it makes the code way easier to follow.
-			// this value is actually never sent to ffmpeg anyways.
-			ret = append(ret, 0)
-			continue
-		}
 		ret = append(ret, fpts)
 
-		if len(ret) == max {
+		if len(ret) == limit {
 			kf.add(ret)
 			if done == 0 {
 				kf.info.ready.Done()
 			} else if done >= 500 {
-				max = 500
+				limit = 500
 			}
-			done += max
+			done += limit
 			// clear the array without reallocing it
 			ret = ret[:0]
 		}
 	}
 	kf.add(ret)
+	kf.IsDone = true
 	if done == 0 {
 		kf.info.ready.Done()
 	}
+	return nil
+}
+
+const DummyKeyframeDuration = float64(4)
+
+// we can pretty much cut audio at any point so no need to get specific frames, just cut every 4s
+func getAudioKeyframes(info *MediaInfo, audio_idx uint32, kf *Keyframe) error {
+	defer printExecTime("ffprobe keyframe analysis for %s audio n%d", info.Path, audio_idx)()
+	// Format's duration CAN be different than audio's duration. To make sure we do not
+	// miss a segment or make one more, we need to check the audio's duration.
+	//
+	// Since fetching the duration requires reading packets and is SLOW, we start by generating
+	// keyframes until a reasonably safe point of the file (if the format has a 20min duration, audio
+	// probably has a close duration).
+	// You can read why duration retrieval is slow on the comment below.
+	safe_duration := info.Duration - 20
+	segment_count := int((safe_duration / DummyKeyframeDuration) + 1)
+	if segment_count > 0 {
+		kf.Keyframes = make([]float64, segment_count)
+		for i := 0; i < segment_count; i += 1 {
+			kf.Keyframes[i] = float64(i) * DummyKeyframeDuration
+		}
+		kf.info.ready.Done()
+	} else {
+		segment_count = 0
+	}
+
+	// Some formats DO NOT contain a duration metadata, we need to manually fetch it
+	// from the packets.
+	//
+	// We could use the same command to retrieve all packets and know when we can cut PRECISELY
+	// but since packets always contain only a few ms we don't need this precision.
+	cmd := exec.Command(
+		"ffprobe",
+		"-select_streams", fmt.Sprintf("a:%d", audio_idx),
+		"-show_entries", "packet=pts_time",
+		// some avi files don't have pts, we use this to ask ffmpeg to generate them (it uses the dts under the hood)
+		"-fflags", "+genpts",
+		// We use a read_interval LARGER than the file (at least we estimate)
+		// This allows us to only decode the LAST packets
+		"-read_intervals", fmt.Sprintf("%f", info.Duration+10_000),
+		"-of", "csv=print_section=0",
+		info.Path,
+	)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	err = cmd.Start()
+	if err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	var duration float64
+	for scanner.Scan() {
+		pts := scanner.Text()
+		if pts == "" || pts == "N/A" {
+			continue
+		}
+
+		duration, err = strconv.ParseFloat(pts, 64)
+		if err != nil {
+			return err
+		}
+
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if duration <= 0 {
+		return errors.New("could not find audio's duration")
+	}
+
+	new_seg_count := int((duration / DummyKeyframeDuration) + 1)
+	if new_seg_count > segment_count {
+		new_segments := make([]float64, new_seg_count-segment_count)
+		for i := segment_count; i < new_seg_count; i += 1 {
+			new_segments[i-segment_count] = float64(i) * DummyKeyframeDuration
+		}
+		kf.add(new_segments)
+		if segment_count == 0 {
+			kf.info.ready.Done()
+		}
+	}
+
 	kf.IsDone = true
 	return nil
 }
