@@ -18,11 +18,11 @@
  * along with Kyoo. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import { MutationParam, WatchStatusV, useAccount } from "@kyoo/models";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useCallback } from "react";
+import { type MutationParam, WatchStatusV, useAccount } from "@kyoo/models";
+import { useMutation } from "@tanstack/react-query";
 import { useAtomValue } from "jotai";
 import { useAtomCallback } from "jotai/utils";
+import { useCallback, useEffect } from "react";
 import { playAtom, progressAtom } from "./state";
 
 export const WatchStatusObserver = ({
@@ -35,14 +35,15 @@ export const WatchStatusObserver = ({
 	duration: number;
 }) => {
 	const account = useAccount();
-	const queryClient = useQueryClient();
+	// const queryClient = useQueryClient();
 	const { mutate: _mutate } = useMutation<unknown, Error, MutationParam>({
 		mutationKey: [type, slug, "watchStatus"],
-		onSettled: async () =>
-			await queryClient.invalidateQueries({ queryKey: [type === "episode" ? "show" : type, slug] }),
+		// onSettled: async () =>
+		// 	await queryClient.invalidateQueries({ queryKey: [type === "episode" ? "show" : type, slug] }),
 	});
 	const mutate = useCallback(
-		(seconds: number) =>
+		(type: string, slug: string, seconds: number) => {
+			if (seconds < 0 || duration <= 0) return;
 			_mutate({
 				method: "POST",
 				path: [type, slug, "watchStatus"],
@@ -51,8 +52,9 @@ export const WatchStatusObserver = ({
 					watchedTime: Math.round(seconds),
 					percent: Math.round((seconds / duration) * 100),
 				},
-			}),
-		[_mutate, type, slug, duration],
+			});
+		},
+		[_mutate, duration],
 	);
 	const readProgress = useAtomCallback(
 		useCallback((get) => {
@@ -65,19 +67,20 @@ export const WatchStatusObserver = ({
 	useEffect(() => {
 		if (!account) return;
 		const timer = setInterval(() => {
-			mutate(readProgress());
+			mutate(type, slug, readProgress());
 		}, 10_000);
 		return () => {
 			clearInterval(timer);
-			mutate(readProgress());
+			mutate(type, slug, readProgress());
 		};
 	}, [account, type, slug, readProgress, mutate]);
 
 	// update watch status when play status change (and on mount).
 	const isPlaying = useAtomValue(playAtom);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Include isPlaying
 	useEffect(() => {
 		if (!account) return;
-		mutate(readProgress());
+		mutate(type, slug, readProgress());
 	}, [account, type, slug, isPlaying, readProgress, mutate]);
 	return null;
 };

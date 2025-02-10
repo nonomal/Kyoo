@@ -29,6 +29,11 @@ jobs:
             label: migrations
             image: zoriya/kyoo_migrations
 
+          - context: ./api
+            dockerfile: Dockerfile
+            label: api
+            image: zoriya/kyoo_api
+
           - context: ./front
             dockerfile: Dockerfile
             label: front
@@ -48,6 +53,11 @@ jobs:
             dockerfile: Dockerfile
             label: transcoder
             image: zoriya/kyoo_transcoder
+
+          - context: ./auth
+            dockerfile: Dockerfile
+            label: auth
+            image: zoriya/keibi
     name: Build ${{matrix.label}}
     steps:
       - uses: actions/checkout@v4
@@ -100,7 +110,7 @@ jobs:
 
       - name: Build and push
         id: docker_build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         if: steps.filter.outputs.should_run == 'true' || github.event_name == 'workflow_dispatch' || startsWith(github.event.ref, 'refs/tags/v')
         with:
           context: ${{matrix.context}}

@@ -2,12 +2,12 @@
 
 1. Install docker & docker-compose
 2. Download the
-   [`docker-compose.yml`](https://github.com/zoriya/kyoo/releases/latest/download/docker-compose.yml),
-   [`nginx.conf.template`](https://raw.githubusercontent.com/zoriya/Kyoo/master/nginx.conf.template) and
+   [`docker-compose.yml`](https://github.com/zoriya/kyoo/releases/latest/download/docker-compose.yml) and
    [`.env`](https://raw.githubusercontent.com/zoriya/Kyoo/master/.env.example) files
-3. Fill the `.env` file with your configuration options (and an API Key from [themoviedb.org](https://www.themoviedb.org/))
+3. Fill the `.env` file with your configuration options
 4. Look at [Hardware Acceleration section](#Hardware-Acceleration) if you need it
-5. Run `docker compose up -d` and see kyoo at `http://localhost:8901`
+5. Look at [FAQ](#FAQ) if you need it,
+6. Run `docker compose up -d` and see kyoo at `http://localhost:8901`
 
 # Installing
 
@@ -17,42 +17,37 @@ To install Kyoo, you need docker and docker-compose. Those can be installed from
 or [Windows](https://docs.docker.com/desktop/install/windows-install/). Docker is used to run each services of Kyoo in
 an isolated environment with all the dependencies they need.
 
-Kyoo also needs 3 files to work properly. Two of them can simply be copy-pasted from this repository, the other needs to be filled in with your configurations.
+Kyoo also needs 2 files to work properly. The first should be downloaded from the latest release artifact, the other needs to be filled in with your configurations.
 Those files can be put in any directory of your choice.
 
-Those 3 files are:
+Those files are:
 
 - A `docker-compose.yml` (simply download docker-compose.yml from [the latest release](https://github.com/zoriya/kyoo/releases/latest/download/docker-compose.yml)).
-- A `nginx.conf.template` copied from [here](https://raw.githubusercontent.com/zoriya/Kyoo/master/nginx.conf.template).
 - A `.env` file that you will need to **fill**. Look at the example [.env.example](https://raw.githubusercontent.com/zoriya/Kyoo/master/.env.example)
 
 > If you want an explanation of what are those files, you can read the following:
 > The `docker-compose.yml` file describes the different services of Kyoo, where they should be downloaded and their start order. \
-> The `nignx.conf.template` file describes which service will be called when accessing the URL of Kyoo. \
 > The `.env` file contains all the configuration options that the services in `docker-compose.yml` will read.
 
-To retrieve metadata, Kyoo will need to communicate with an external service. For now, that is `the movie database`.
-For this purpose, you will need to get an API Key. For that, go to [themoviedb.org](https://www.themoviedb.org/) and create an account, then
-go [here](https://www.themoviedb.org/settings/api) and copy the `API Key (v3 auth)`, paste it after the `THEMOVIEDB_APIKEY=` on the `.env` file.
-
-If you need hardware acceleration, look at [Hardware Acceleration section](#Hardware-Acceleration) if you need it
+If you need hardware acceleration, look at [Hardware Acceleration section](#Hardware-Acceleration).
+If you need custom volumes (because video directories are on different disks and you can't use raid, because you use network drives or another custom volume type), look at [Custom Volumes](#Custom-Volumes).
 
 The next and last step is actually starting Kyoo. To do that, open a terminal in the same directory as the 3 configurations files
-and run `docker-compose up -d`.
+and run `docker compose up -d`.
 
 Congratulation, everything is now ready to use Kyoo. You can navigate to `http://localhost:8901` on a web browser to see your instance of Kyoo.
 
 # Updating
 
-Updating Kyoo is exactly the same as installing it. Get an updated version of the `docker-compose.yml` and `nginx.conf.template` files and
+Updating Kyoo is exactly the same as installing it. Get an updated version of the `docker-compose.yml` file and
 unsure that your `.env` contains all the options specified in the updated `.env.example` file.
 
 After that, you will need to update Kyoo's services. For that, open a terminal in the configuration's directory and run
-the command `docker-compose pull`. You are now ready to restart Kyoo, you can run `docker-compose up -d`.
+the command `docker compose pull`. You are now ready to restart Kyoo, you can run `docker compose up -d`.
 
 # Uninstalling
 
-To uninstall Kyoo, you need to open a terminal in the configuration's directory and run `docker-compose down`. This will
+To uninstall Kyoo, you need to open a terminal in the configuration's directory and run `docker compose down`. This will
 stop Kyoo's services. You can then remove the configuration files.
 
 # Hardware Acceleration
@@ -95,3 +90,50 @@ You can also add `COMPOSE_PROFILES=nvidia` to your `.env` instead of adding the 
 
 Note that most nvidia cards have an artificial limit on the number of encodes. You can confirm your card limit [here](https://developer.nvidia.com/video-encode-and-decode-gpu-support-matrix-new).
 This limit can also be removed by applying an [unofficial patch](https://github.com/keylase/nvidia-patch) to you driver.
+
+# FAQ
+
+## Custom volumes
+
+To customize volumes, you can edit the `docker-compose.yml` manually.
+
+For example, if your library is split into multiples paths you can edit the `volumes` section of **BOTH the transcoder and the scanner** like so:
+
+```patch
+ x-transcoder: &transcoder-base
+   image: ghcr.io/zoriya/kyoo_transcoder:edge
+   networks:
+     default:
+       aliases:
+         - transcoder
+   restart: unless-stopped
+   env_file:
+     - ./.env
+   environment:
+     - GOCODER_PREFIX=/video
+   volumes:
+-    - ${LIBRARY_ROOT}:/video:ro
++    - /my_path/number1:/video/1:ro
++    - /c/Users/Videos/:video/c:ro
+     - ${CACHE_ROOT}:/cache
+     - metadata:/metadata
+```
+You can also edit the volume definition to use advanced volume drivers if you need to access smb or network drives. Mounting a drive into your filesystem and binding it in this volume section is also a valid choice (especially for fuse filesystems like cloud drives for example).
+
+Don't forget to **also edit the scanner's volumes** if you edit the transcoder's volume.
+
+## Ignoring Directories
+Kyoo supports excluding specific directories from scanning and monitoring by detecting the presence of a `.ignore` file. When a directory contains a `.ignore` file, Kyoo will recursively exclude that directory and all its contents from processing.
+
+Example:
+To exclude `/media/extras/**`, add a `.ignore` file:
+```bash
+touch /media/extras/.ignore
+```
+Kyoo will skip `/media/extras` and its contents in all future scans and monitoring events.
+
+# OpenID Connect
+
+Kyoo supports OpenID Connect (OIDC) for authentication. Please refer to the [OIDC.md](OIDC.md) file for more information.
+
+<!-- vim: set wrap: -->
